@@ -15,7 +15,6 @@ type SSDBClient struct {
 	Password string
 	Host     string
 	Port     int
-	client   *Client
 	sock     *net.TCPConn
 	buf      *bufio.Reader
 	send_buf bytes.Buffer
