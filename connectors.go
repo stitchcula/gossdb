@@ -28,6 +28,7 @@ func (c *Connectors) Init(cfg *conf.Config) {
 
 	c.pool.Config.MaxTotal = cfg.MaxPoolSize
 	c.pool.Config.MinIdle = cfg.MinPoolSize
+	c.pool.Config.TestOnReturn = true
 }
 
 // 测试&Ping
