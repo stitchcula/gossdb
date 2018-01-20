@@ -16,12 +16,28 @@ type Connectors struct {
 //
 //  cfg 配置文件
 func (c *Connectors) Init(cfg *conf.Config) {
+	if cfg.WriteBufferSize < 1 {
+		cfg.WriteBufferSize = 8
+	}
+	if cfg.ReadBufferSize < 1 {
+		cfg.ReadBufferSize = 8
+	}
+	if cfg.ReadWriteTimeout < 1 {
+		cfg.ReadWriteTimeout = 60
+	}
+	if cfg.ConnectTimeout < 1 {
+		cfg.ConnectTimeout = 5
+	}
 	c.pool = pool.NewObjectPoolWithDefaultConfig(&clientFactory{
 		MakeNew: func() (*SSDBClient, error) {
 			return &SSDBClient{
 				Host:     cfg.Host,
 				Port:     cfg.Port,
 				Password: cfg.Password,
+				ReadBufferSize:  cfg.ReadBufferSize,
+				WriteBufferSize: cfg.WriteBufferSize,
+				ReadWriteTimeout: cfg.ReadWriteTimeout,
+				ConnectTimeout:   cfg.ConnectTimeout,
 			}, nil
 		},
 	})

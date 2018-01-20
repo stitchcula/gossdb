@@ -1,13 +1,18 @@
 package gossdb
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/seefan/goerr"
 	"net"
 	"strconv"
+	"time"
+)
+
+const (
+	ENDN = '\n'
+	ENDR = '\r'
 )
 
 type SSDBClient struct {
@@ -16,32 +21,39 @@ type SSDBClient struct {
 	Host      string
 	Port      int
 	sock      *net.TCPConn
-	buf       *bufio.ReadWriter
-	packetBuf bytes.Buffer
+	readBuf  []byte
+	//连接写缓冲，默认为8k，单位为kb
+	WriteBufferSize int
+	//连接读缓冲，默认为8k，单位为kb
+	ReadBufferSize int
+	//是否重试
+	RetryEnabled bool
+	//读写超时
+	ReadWriteTimeout int
+	//0时间
+	timeZero time.Time
+	//创建连接的超时时间，单位为秒。默认值: 5
+	ConnectTimeout int
 }
 
 //打开连接
 func (s *SSDBClient) Start() error {
-	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", s.Host, s.Port))
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", s.Host, s.Port), time.Second)
 	if err != nil {
 		return err
 	}
-	sock, err := net.DialTCP("tcp", nil, addr)
-	if err != nil {
-		return err
-	}
-	sock.SetReadBuffer(1024 * 1024)
-	//sock.SetWriteBuffer(1024)
-	s.buf = bufio.NewReadWriter(bufio.NewReader(sock), bufio.NewWriter(sock))
+	sock := conn.(*net.TCPConn)
+	sock.SetReadBuffer(s.ReadBufferSize * 1024)
+	sock.SetWriteBuffer(s.WriteBufferSize * 1024)
+	s.readBuf = make([]byte, s.ReadBufferSize*1024)
 	s.sock = sock
-
+	s.timeZero = time.Time{}
 	s.isOpen = true
 	return nil
 }
 func (s *SSDBClient) Close() error {
 	s.isOpen = false
-	s.buf = nil
-	s.packetBuf.Reset()
+	s.readBuf = nil
 	return s.sock.Close()
 }
 func (s *SSDBClient) IsOpen() bool {
@@ -52,12 +64,18 @@ func (s *SSDBClient) Ping() bool {
 	return err == nil
 }
 func (s *SSDBClient) do(args ...interface{}) ([]string, error) {
+	if !s.isOpen {
+		return nil, goerr.New("gossdb client is closed.")
+	}
 	err := s.send(args)
 	if err != nil {
-		return nil, err
+		return nil, goerr.NewError(err, "client send error")
 	}
-	resp, err := s.Recv()
-	return resp, err
+	if resp, err := s.Recv(); err != nil {
+		return nil, goerr.NewError(err, "client recv error")
+	} else {
+		return resp, nil
+	}
 }
 
 //通用调用方法，如果有需要在所有方法前执行的，可以在这里执行
@@ -69,7 +87,7 @@ func (s *SSDBClient) Do(args ...interface{}) ([]string, error) {
 			s.isOpen = false
 			return nil, goerr.NewError(err, "authentication failed")
 		}
-		if len(resp) > 0 && resp[0] == "ok" {
+		if len(resp) > 0 && resp[0] == OK {
 			//验证成功
 			s.Password = ""
 		} else {
@@ -78,8 +96,15 @@ func (s *SSDBClient) Do(args ...interface{}) ([]string, error) {
 	}
 	resp, err := s.do(args...)
 	if err != nil {
-		s.sock.Close()
-		s.isOpen = false
+		s.Close()
+		if s.RetryEnabled { //如果允许重试，就重新打开一次连接
+			if err = s.Start(); err == nil {
+				resp, err = s.do(args...)
+				if err != nil {
+					s.Close()
+				}
+			}
+		}
 	}
 	return resp, err
 }
@@ -89,90 +114,98 @@ func (s *SSDBClient) Send(args ...interface{}) error {
 }
 
 func (s *SSDBClient) send(args []interface{}) error {
-
+	var packetBuf bytes.Buffer
 	for _, arg := range args {
 		switch arg := arg.(type) {
 		case string:
-			s.buf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.WriteString(arg)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.WriteString(arg)
+		case []string:
+			for _, a := range arg {
+				packetBuf.Write(strconv.AppendInt(nil, int64(len(a)), 10))
+				packetBuf.WriteByte(ENDN)
+				packetBuf.WriteString(a)
+				packetBuf.WriteByte(ENDN)
+			}
+			continue
 		case []byte:
-			s.buf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(arg)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(arg)
 		case int:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case int8:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case int16:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case int32:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case int64:
 			bs := strconv.AppendInt(nil, arg, 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case uint8:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case uint16:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case uint32:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case uint64:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case float32:
 			bs := strconv.AppendFloat(nil, float64(arg), 'g', -1, 32)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case float64:
 			bs := strconv.AppendFloat(nil, arg, 'g', -1, 64)
-			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.buf.WriteByte('\n')
-			s.buf.Write(bs)
+			packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			packetBuf.WriteByte(ENDN)
+			packetBuf.Write(bs)
 		case bool:
-			s.buf.WriteByte(1)
-			s.buf.WriteByte('\n')
+			packetBuf.WriteByte(1)
+			packetBuf.WriteByte(ENDN)
 			if arg {
-				s.buf.WriteByte(1)
+				packetBuf.WriteByte(1)
 			} else {
-				s.buf.WriteByte(0)
+				packetBuf.WriteByte(0)
 			}
 		case nil:
-			s.buf.WriteByte(0)
-			s.buf.WriteByte('\n')
-			s.buf.WriteString("")
+			packetBuf.WriteByte(0)
+			packetBuf.WriteByte(ENDN)
+			packetBuf.WriteString("")
 		default:
 			if Encoding {
 				if bs, err := json.Marshal(arg); err == nil {
-					s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-					s.buf.WriteByte('\n')
-					s.buf.Write(bs)
+					packetBuf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+					packetBuf.WriteByte(ENDN)
+					packetBuf.Write(bs)
 				} else {
 					return fmt.Errorf("bad arguments type,can not json marshal")
 				}
@@ -180,47 +213,88 @@ func (s *SSDBClient) send(args []interface{}) error {
 				return fmt.Errorf("bad arguments type")
 			}
 		}
-		s.buf.WriteByte('\n')
+		packetBuf.WriteByte(ENDN)
 	}
-	s.buf.WriteByte('\n')
-	return s.buf.Flush()
+	packetBuf.WriteByte(ENDN)
+
+	if err := s.sock.SetWriteDeadline(time.Now().Add(time.Second * time.Duration(s.ReadWriteTimeout))); err != nil {
+		return err
+	}
+	for _, err := packetBuf.WriteTo(s.sock); packetBuf.Len() > 0; {
+		if err != nil {
+			packetBuf.Reset()
+			return goerr.NewError(err, "client socket write error")
+		}
+	}
+	//设置不超时
+	if err := s.sock.SetWriteDeadline(s.timeZero); err != nil {
+		return err
+	}
+	packetBuf.Reset()
+	return nil
 }
 
 func (s *SSDBClient) Recv() (resp []string, err error) {
-	packetSize := -1
-	drop := 1
 	bufSize := 0
-	s.packetBuf.Reset()
+	packetBuf := []byte{}
+	//设置读取数据超时，
+	if err = s.sock.SetReadDeadline(time.Now().Add(time.Second * time.Duration(s.ReadWriteTimeout))); err != nil {
+		return nil, err
+	}
 	//数据包分解，发现长度，找到结尾，循环发现，发现空行，结束
 	for {
-		buf, err := s.buf.ReadBytes('\n')
+		bufSize, err = s.sock.Read(s.readBuf)
 		if err != nil {
-			return nil, err
+			return nil, goerr.NewError(err, "client socket read error")
 		}
-		bufSize = len(buf)
-		if packetSize == -1 {
-			if bufSize == 1 || bufSize == 2 && buf[0] == '\r' { //空行，说明一个数据包结束
-				if len(resp) == 0 { //发现空行，如果还没有数据，说明数据包还没有开始
-					continue
-				}
-				return resp, nil
-			}
-			//数据包开始，包长度解析
-			packetSize = ToNum(buf[:])
-		} else {
-			//data endwith '\n' or '\r\n',
-			drop = s.packetBuf.Len() + bufSize - packetSize
-			if drop > 0 {
-				if _, err = s.packetBuf.Write(buf[:bufSize-drop]); err != nil {
-					return nil, err
-				}
-				resp = append(resp, s.packetBuf.String())
-				s.packetBuf.Reset()
-				packetSize = -1
+		if bufSize < 1 {
+			continue
+		}
+		packetBuf = append(packetBuf, s.readBuf[:bufSize]...)
+
+		for {
+			rsp, n := s.parse(packetBuf)
+			if n == -1 {
+				break
+			} else if n == -2 {
+				return
 			} else {
-				s.packetBuf.Write(buf)
+				resp = append(resp, rsp)
+				packetBuf = packetBuf[n+1:]
 			}
 		}
 	}
+	packetBuf = nil
+	//设置不超时
+	if err = s.sock.SetReadDeadline(s.timeZero); err != nil {
+		return nil, err
+	}
 	return resp, nil
+}
+
+func (s *SSDBClient) parse(buf []byte) (resp string, size int) {
+	n := bytes.IndexByte(buf, ENDN)
+	blockSize := -1
+	size = -1
+	if n != -1 {
+		if n == 0 || n == 1 && buf[0] == ENDR { //空行，说明一个数据包结束
+			size = -2
+			return
+		}
+		//数据包开始，包长度解析
+		blockSize = ToNum(buf[:n])
+		bufSize := len(buf)
+
+		if n+blockSize < bufSize {
+			resp = string(buf[n+1 : blockSize+n+1])
+			for i := blockSize + n + 1; i < bufSize; i++ {
+				if buf[i] == ENDN {
+					size = i
+					return
+				}
+			}
+		}
+	}
+
+	return
 }

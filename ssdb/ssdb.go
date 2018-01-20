@@ -35,7 +35,7 @@ func getConfig(c *goconfig.ConfigFile, name string) *conf.Config {
 //  返回 error，正常启动返回nil
 func Start(config ...string) error {
 	log.Info("SSDB连接池启动")
-	configName := "config.ini"
+	configName := conf.ConfigName
 	if len(config) > 0 {
 		configName = config[0]
 	}
@@ -74,4 +74,29 @@ func Client() (*gossdb.Client, error) {
 		return nil, fmt.Errorf("SSDB连接池还未初始化")
 	}
 	return pool.NewClient()
+}
+
+
+//连接的简单使用方法
+//
+// fn func(c *gossdb.Client) error 实际业务的函数，输入参数为client，输出为error
+// 返回 error 可能的错误
+//
+//    示例：
+//
+//    ssdb.Simple(func(c *gossdb.Client) error {
+//      c.Set("test", "hello world")
+//      c.Get("test")
+//      return nil
+//    })
+func Simple(fn func(c *gossdb.Client) error) error {
+	if client, err := Client(); err == nil {
+		defer client.Close()
+		if err = fn(client); err != nil {
+			return err
+		}
+		return nil
+	} else {
+		return err
+	}
 }
