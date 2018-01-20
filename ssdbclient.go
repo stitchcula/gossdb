@@ -11,13 +11,13 @@ import (
 )
 
 type SSDBClient struct {
-	isOpen   bool
-	Password string
-	Host     string
-	Port     int
-	sock     *net.TCPConn
-	buf      *bufio.Reader
-	send_buf bytes.Buffer
+	isOpen    bool
+	Password  string
+	Host      string
+	Port      int
+	sock      *net.TCPConn
+	buf       *bufio.ReadWriter
+	packetBuf bytes.Buffer
 }
 
 //打开连接
@@ -30,17 +30,18 @@ func (s *SSDBClient) Start() error {
 	if err != nil {
 		return err
 	}
-	sock.SetReadBuffer(1024)
-	sock.SetWriteBuffer(1024)
-
+	sock.SetReadBuffer(1024 * 1024)
+	//sock.SetWriteBuffer(1024)
+	s.buf = bufio.NewReadWriter(bufio.NewReader(sock), bufio.NewWriter(sock))
 	s.sock = sock
 
-	s.buf = bufio.NewReader(sock)
 	s.isOpen = true
 	return nil
 }
 func (s *SSDBClient) Close() error {
 	s.isOpen = false
+	s.buf = nil
+	s.packetBuf.Reset()
 	return s.sock.Close()
 }
 func (s *SSDBClient) IsOpen() bool {
@@ -88,90 +89,90 @@ func (s *SSDBClient) Send(args ...interface{}) error {
 }
 
 func (s *SSDBClient) send(args []interface{}) error {
-	s.send_buf.Reset()
+
 	for _, arg := range args {
 		switch arg := arg.(type) {
 		case string:
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.WriteString(arg)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.WriteString(arg)
 		case []byte:
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(arg)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(arg)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(arg)
 		case int:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case int8:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case int16:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case int32:
 			bs := strconv.AppendInt(nil, int64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case int64:
 			bs := strconv.AppendInt(nil, arg, 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case uint8:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case uint16:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case uint32:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case uint64:
 			bs := strconv.AppendUint(nil, uint64(arg), 10)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case float32:
 			bs := strconv.AppendFloat(nil, float64(arg), 'g', -1, 32)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case float64:
 			bs := strconv.AppendFloat(nil, arg, 'g', -1, 64)
-			s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-			s.send_buf.WriteByte('\n')
-			s.send_buf.Write(bs)
+			s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+			s.buf.WriteByte('\n')
+			s.buf.Write(bs)
 		case bool:
-			s.send_buf.WriteByte(1)
-			s.send_buf.WriteByte('\n')
+			s.buf.WriteByte(1)
+			s.buf.WriteByte('\n')
 			if arg {
-				s.send_buf.WriteByte(1)
+				s.buf.WriteByte(1)
 			} else {
-				s.send_buf.WriteByte(0)
+				s.buf.WriteByte(0)
 			}
 		case nil:
-			s.send_buf.WriteByte(0)
-			s.send_buf.WriteByte('\n')
-			s.send_buf.WriteString("")
+			s.buf.WriteByte(0)
+			s.buf.WriteByte('\n')
+			s.buf.WriteString("")
 		default:
 			if Encoding {
 				if bs, err := json.Marshal(arg); err == nil {
-					s.send_buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
-					s.send_buf.WriteByte('\n')
-					s.send_buf.Write(bs)
+					s.buf.Write(strconv.AppendInt(nil, int64(len(bs)), 10))
+					s.buf.WriteByte('\n')
+					s.buf.Write(bs)
 				} else {
 					return fmt.Errorf("bad arguments type,can not json marshal")
 				}
@@ -179,45 +180,46 @@ func (s *SSDBClient) send(args []interface{}) error {
 				return fmt.Errorf("bad arguments type")
 			}
 		}
-		s.send_buf.WriteByte('\n')
+		s.buf.WriteByte('\n')
 	}
-	s.send_buf.WriteByte('\n')
-	//_, err := s.buf.Write(s.send_buf.Bytes())
-	//if err == nil {
-	//	err = s.buf.Flush()
-	//}
-	_, err := s.sock.Write(s.send_buf.Bytes())
-	return err
+	s.buf.WriteByte('\n')
+	return s.buf.Flush()
 }
 
-func (s *SSDBClient) Recv() ([]string, error) {
-	resp := []string{}
+func (s *SSDBClient) Recv() (resp []string, err error) {
+	packetSize := -1
+	drop := 1
+	bufSize := 0
+	s.packetBuf.Reset()
+	//数据包分解，发现长度，找到结尾，循环发现，发现空行，结束
 	for {
-		p, err := s.buf.ReadBytes('\n')
+		buf, err := s.buf.ReadBytes('\n')
 		if err != nil {
-			break
+			return nil, err
 		}
-		p = p[:len(p)-1]
-		if len(p) == 0 || (len(p) == 1 && p[0] == '\r') {
-			if len(resp) == 0 {
-				continue
-			} else {
+		bufSize = len(buf)
+		if packetSize == -1 {
+			if bufSize == 1 || bufSize == 2 && buf[0] == '\r' { //空行，说明一个数据包结束
+				if len(resp) == 0 { //发现空行，如果还没有数据，说明数据包还没有开始
+					continue
+				}
 				return resp, nil
 			}
-		}
-		size := ToNum(p)
-
-		for {
-			bs, err := s.buf.Peek(size)
-			if err != nil {
-				continue
+			//数据包开始，包长度解析
+			packetSize = ToNum(buf[:])
+		} else {
+			//data endwith '\n' or '\r\n',
+			drop = s.packetBuf.Len() + bufSize - packetSize
+			if drop > 0 {
+				if _, err = s.packetBuf.Write(buf[:bufSize-drop]); err != nil {
+					return nil, err
+				}
+				resp = append(resp, s.packetBuf.String())
+				s.packetBuf.Reset()
+				packetSize = -1
+			} else {
+				s.packetBuf.Write(buf)
 			}
-			resp = append(resp, string(bs))
-			_, err = s.buf.Discard(size + 1)
-			if err != nil {
-				return nil, err
-			}
-			break
 		}
 	}
 	return resp, nil
